@@ -10,12 +10,25 @@ using System.Diagnostics;
 /**
  * Grab the pellets as fast as you can!
  **/
-class Player
+class Player : Logger
 {
-    public static Map _map;
-    public static List<Pellet> _pellets;
+    private static Game game = new Game();
 
     static void Main(string[] args)
+    {
+        game.Play(args);
+    }
+}
+
+
+public class Game : Logger
+{
+
+    public static Map _map;
+    public static List<Pellet> _pellets;
+    public Dictionary<Pac, string> _moveOutput;
+
+    public void Play(string[] args)
     {
         string[] inputs;
         var inputBoardSize = Console.ReadLine();
@@ -32,13 +45,15 @@ class Player
         }
         _pellets = _map.GetAllValidPos().Select(x => new Pellet { Pos = x, Value = 1 }).ToList();
         List<Pac> pacs = new List<Pac>();
-        List<Pac> enemyPac = new List<Pac>();
+        List<Pac> enemyPacs = new List<Pac>();
 
         // game loop
         while (true)
         {
-            enemyPac = new List<Pac>();
+            #region Read input
+            enemyPacs = new List<Pac>();
             var inputScore = Console.ReadLine();
+            _moveOutput = new Dictionary<Pac, string>();
             //Err($"inputScore: {inputScore}");
             inputs = inputScore.Split(' ');
             int myScore = int.Parse(inputs[0]);
@@ -66,7 +81,7 @@ class Player
 
                     if (pac == default)
                     {
-                        pacs.Add(new Pac
+                        pacs.Add(new Pac(_map)
                         {
                             Id = pacId,
                             Pos = new Pos(x, y),
@@ -86,7 +101,7 @@ class Player
                 }
                 else
                 {
-                    enemyPac.Add(new Pac
+                    enemyPacs.Add(new Pac(_map)
                     {
                         Id = pacId,
                         Pos = new Pos(x, y),
@@ -114,6 +129,7 @@ class Player
                 //pellets.Add(new Pellet { Pos = new Pos(x, y), Value = value });
                 visiblePellets.Add(new Pellet { Pos = new Pos(x, y), Value = value });
             }
+            #endregion read input
 
             #region STATE UPDATE
             var superPellets = visiblePellets.Where(p => p.IsSuperPellet);
@@ -127,7 +143,7 @@ class Player
 
             var visibleTiles = GetVisibleTiles(pacs);
 
-            var tilesWithoutPellets = visibleTiles.Select(x => x).ToList() ;
+            var tilesWithoutPellets = visibleTiles.Select(x => x).ToList();
             foreach (var pellet in visiblePellets)
             {
                 tilesWithoutPellets.Remove(pellet.Pos);
@@ -135,8 +151,8 @@ class Player
 
             foreach (var pos in tilesWithoutPellets)
             {
-                var indexToRemvoe =_pellets.FindIndex(p => p.Pos == pos);
-                if(indexToRemvoe >= 0) _pellets.RemoveAt(indexToRemvoe);
+                var indexToRemvoe = _pellets.FindIndex(p => p.Pos == pos);
+                if (indexToRemvoe >= 0) _pellets.RemoveAt(indexToRemvoe);
             }
 
             // clear next target if I know the pellet is gone
@@ -146,6 +162,7 @@ class Player
             }
             #endregion STATE UPDATE
 
+            //calcualte distances to pellets
             foreach (var pellet in _pellets)
             {
                 foreach (var pac in pacs)
@@ -170,9 +187,28 @@ class Player
                 }
             }
 
+            //Find next target
             foreach (var pac in pacs)
             {
                 if (pac.HasTarget) continue;
+
+                // aim for enemy
+                if (enemyPacs.Any())
+                {
+                    var enemyPac = enemyPacs.First();
+                    Err($"ATTACK MODE! EnemyPac: {enemyPac}");
+                    if (!pac.PacType.IsOpposite(enemyPac.PacType))
+                    {
+                        _moveOutput[pac] = $"SWITCH {pac.Id} {enemyPac.PacType.GetOpposite()}";
+                    }
+                    else
+                    {
+                        pac.NextTarget = enemyPac.Pos;
+                        _moveOutput[pac] = $"MOVE {pac.Id} {pac.NextMove}";
+
+                    }
+                }
+
                 // aim for Super pellet
                 var superPelletsClosestToThisPac = _pellets?.Where(x => x.IsSuperPellet)?.Where(x => x.ClosestPac.HasValue && x.ClosestPac.Value.Key == pac)?.OrderBy(x => x.ClosestPac.Value.Value);
                 var closestSuperPelelt = superPelletsClosestToThisPac?.FirstOrDefault();
@@ -191,12 +227,64 @@ class Player
                         closestPelletToThisPac = pelletsClosestToThisPac?.FirstOrDefault();
                         pac.NextTarget = closestPelletToThisPac?.Pos;
                     }
-                }                
+                }
+            }
 
+            //change target if opposite enemy is infront
+            foreach (var pac in pacs)
+            {
+                var enemyInfont = enemyPacs.Where(p => p.Pos == pac.NextMove || p.Pos == pac.DoubleForward);
+                if (enemyInfont.Any())
+                {
+                    if (enemyInfont.Count() == 1)
+                    {
+                        var enemyPac = enemyInfont.First();
+                        if (enemyPac.PacType.IsOpposite(pac.PacType))
+                        {
+                            // ?? 
+                            Err($"Enemy Infront is STRONG vs ME");
+                            if (pac.AbilityCooldown == 0)
+                            {
+                                _moveOutput[pac] = $"SWITCH {pac.Id} {enemyPac.PacType.GetOpposite()}";
+                            }
+                            AStarPathFiner pather = new AStarPathFiner();
+                            var path = pather.FindPath(_map, pac.Pos, pac.NextTarget, avoidEnemy: true, enemyPacs);
+                            var newNextMove = path.FirstOrDefault();
+                            if (newNextMove != null)
+                            {
+                                pac.NextMove = newNextMove;
+                                _moveOutput[pac] = $"MOVE {pac.Id} {pac.NextMove}";
+                            }
+                            else
+                            {
+                                pac.NextMove = pac.LastMove;
+                                _moveOutput[pac] = $"MOVE {pac.Id} {pac.NextMove}";
+                            }
+
+                        }
+                        else if (pac.PacType.IsOpposite(enemyPac.PacType))
+                        {
+                            Err($"Enemy Infront is WEAK vs ME");
+
+                            // keep going I win
+                        }
+                        else if(pac.PacType == enemyPac.PacType)
+                        {
+                            Err($"Enemy Infront is SAME TYPE");
+
+                            // we are the same type. let it block
+                        }
+                    }
+                }
+            }
+
+            //Adjust target based on speed
+            foreach (var pac in pacs)
+            {
                 if (pac.HasTarget && pac.NextTarget.IsAdjacent(pac.Pos) && pac.IsOnSpeed)
                 {
                     var adjecentPoses = _map.ValidAdjecentPos(pac.NextTarget);
-                    Err($"adjecentPoses: {adjecentPoses.EnumerableToString()}");
+                    //Err($"adjecentPoses {pac.Id}: {adjecentPoses.EnumerableToString()}");
                     if (adjecentPoses.Any())
                     {
                         adjecentPoses.Remove(pac.Pos);
@@ -204,7 +292,7 @@ class Player
                         {
                             var pelletsPoses = _pellets.Select(x => x.Pos);
                             var adjecentPellets = pelletsPoses.Intersect(adjecentPoses);
-                            Err($"adjecentPellets: {adjecentPellets.EnumerableToString()}");
+                            //Err($"adjecentPellets: {adjecentPellets.EnumerableToString()}");
                             if (adjecentPellets.Any())
                             {
                                 pac.NextTarget = adjecentPellets.First();
@@ -218,61 +306,50 @@ class Player
                 }
             }
 
-            var moveOutput = "";
-
             foreach (var pac in pacs)
             {
                 if (pac.AbilityCooldown == 0)
                 {
                     if (pac.IsBlocked)
                     {
-                        Err($"pac.IsBlocked && Ability cool down is 0");
-                        Err($"enemyPac: {enemyPac.EnumerableToString()}");
-                        Err($"my pac: {pac}");
-                        Err($"My Pos: {pac.Pos}, My Forward: {pac.Forward}, My DoubleForward Pos: {pac.DoubleForward}, DoubleEast: {pac.Pos.East.East}");
-                        var blockingEnemy = enemyPac.Find(p =>p.Pos == pac.Forward || p.Pos == pac.DoubleForward);
-                        Err($"blockingEnemy: {blockingEnemy}");
+                        //Err($"pac.IsBlocked && Ability cool down is 0");
+                        //Err($"enemyPac: {enemyPacs.EnumerableToString()}");
+                        //Err($"my pac: {pac}");
+                        //Err($"My Pos: {pac.Pos}, My Forward: {pac.Forward}, My DoubleForward Pos: {pac.DoubleForward}, DoubleEast: {pac.Pos.East.East}");
+                        var blockingEnemy = enemyPacs.Find(p => p.Pos == pac.Forward || p.Pos == pac.DoubleForward);
+                        //Err($"blockingEnemy: {blockingEnemy}");
                         if (blockingEnemy != default) // blocked by enemy change to opposite type
                         {
                             var oppositeType = blockingEnemy.PacType.GetOpposite();
-                            moveOutput += $"SWITCH {pac.Id} {oppositeType}";
+                            if (!_moveOutput.ContainsKey(pac)) _moveOutput[pac] = $"SWITCH {pac.Id} {oppositeType}";
                         }
                     }
                     else
                     {
-                        moveOutput += $"SPEED {pac.Id}"; // SPEED <pacId>
-                    }
-
-                    if (pacs.Last() != pac)
-                    {
-                        moveOutput += "|";
+                        //if(!_moveOutput.ContainsKey(pac)) _moveOutput[pac] = $"SPEED {pac.Id}"; // SPEED <pacId>
                     }
                 }
-                else if(pac.NextTarget != null)
+                if (pac.NextTarget != null)
                 {
                     var blockingPac = pacs.Find(p => p.Pos == pac.Forward);
                     if (blockingPac != default) // blocked by me
                     {
-                        Err($"Blocked by me. Pac {pac.Id} is blocked by {blockingPac.Id}.");
+                        //Err($"Blocked by me. Pac {pac.Id} is blocked by {blockingPac.Id}.");
                         var pacNexttarget = pac.NextTarget;
                         pac.NextTarget = blockingPac.NextTarget;
                         blockingPac.NextTarget = pacNexttarget;
                     }
 
-                    moveOutput += $"MOVE {pac.Id} {pac.NextTarget} '{pac.NextTarget}'"; // MOVE <pacId> <x> <y> <message>
-                    if (pacs.Last() != pac)
-                    {
-                        moveOutput += "|";
-                    }
+                    if (!_moveOutput.ContainsKey(pac)) _moveOutput[pac] = $"MOVE {pac.Id} {pac.NextTarget} '{pac.NextTarget}'"; // MOVE <pacId> <x> <y> <message>
+
                 }
             }
 
-            Console.WriteLine(moveOutput); 
-
+            Console.WriteLine(_moveOutput.Values.Aggregate((a, b) => $"{a}|{b}"));
         }
     }
 
-    private static List<Pos> GetVisibleTiles(List<Pac> pacs)
+    private List<Pos> GetVisibleTiles(List<Pac> pacs)
     {
         var visibleTiles = new List<Pos>();
         foreach (var pac in pacs)
@@ -314,18 +391,20 @@ class Player
         return visibleTiles.Distinct().ToList();
     }
 
-    private static void Err(string msg)
-    {
-        Console.Error.WriteLine(msg);
-    }
-
-    private static double GetDistance(Pos from, Pos to)
+    private double GetDistance(Pos from, Pos to)
     {
         return Math.Sqrt(Math.Pow(to.X - from.X, 2) + Math.Pow(to.Y - from.Y, 2));
     }
 }
 
-public class Pac : IEquatable<Pac>
+public class Logger {
+    public void Err(string msg)
+    {
+        Console.Error.WriteLine(msg);
+    }
+}
+
+public class Pac : Logger, IEquatable<Pac>
 {
     private Map _map;
 
@@ -340,19 +419,25 @@ public class Pac : IEquatable<Pac>
     public Pos LastMove { get; set; }
     public bool IsBlocked => LastMove == Pos;
     public bool HasTarget => NextTarget != default;
-
-    private Pos _nextMove;
-    private Pos NextMove 
+    //KeyValuePair<nextTarget, Pos, nextmove>
+    private Tuple<Pos, Pos, Pos> _nextMove = new Tuple<Pos, Pos, Pos>(null, null, null);
+    public Pos NextMove 
     {
         get 
         {
-            if(_nextMove == default)
+            if (_nextMove.Item1 == NextTarget && _nextMove.Item2 == Pos)
             {
-                var pathFinder = new AStarPathFiner();
-                Path = pathFinder.FindPath(_map, Pos, NextTarget);
-                _nextMove = Path.FirstOrDefault();
+                return _nextMove.Item3;
             }
-            return _nextMove;
+            var pathFinder = new AStarPathFiner();
+            Path = pathFinder.FindPath(_map, Pos, NextTarget);
+            //Err($"Path [{Id}]: {Path.EnumerableToString()}");
+            _nextMove = new Tuple<Pos, Pos, Pos>(NextTarget, Pos, Path.FirstOrDefault());
+            return NextMove;
+        }
+        set
+        {
+            _nextMove = new Tuple<Pos, Pos, Pos>(NextTarget, Pos, value);
         }
     }
 
@@ -374,7 +459,7 @@ public class Pac : IEquatable<Pac>
             if (NextMove.X - Pos.X == 1) return Pos.East;
             if (NextMove.Y - Pos.Y == 1) return Pos.South;
             if (NextMove.X - Pos.X == -1) return Pos.West;
-            throw new Exception($"Forward nextmove - pos didnt do as expected. NextMove {NextMove} Pos {Pos}.");
+            throw new Exception($"Forward nextMove - pos didn't do as expected.{this}.");
         }
     }
 
@@ -388,13 +473,13 @@ public class Pac : IEquatable<Pac>
             if (NextMove.X - Pos.X == 1) return Pos.East.East;
             if (NextMove.Y - Pos.Y == 1) return Pos.South.South;
             if (NextMove.X - Pos.X == -1) return Pos.West.West;
-            throw new Exception($"DoubleForward nextmove - pos didnt do as expected. NextMove {NextMove} Pos {Pos}.");
+            throw new Exception($"DoubleForward nextMove - pos didn't do as expected. {this}.");
         }
     }
 
     public override string ToString()
     {
-        return $"Id:{Id},[{Pos}],{PacType},next:[{NextTarget}],IsBlocked:{IsBlocked},lastMove:{LastMove}";
+        return $"Id:{Id},[{Pos}],{PacType},target:[{NextTarget}],nextMove[{NextMove}],IsBlocked:{IsBlocked},lastMove:{LastMove}";
     }
 
     #region IEquatable
@@ -471,6 +556,11 @@ public static class ExtensionMethods
             default:
                 throw new Exception();
         }
+    }
+
+    public static bool IsOpposite(this PacType type1, PacType type2)
+    {
+        return type1.GetOpposite() == type2;
     }
 }
 
@@ -737,7 +827,7 @@ public class AStarPathFiner
 
     Dictionary<Pos, Pos> _nodeLinks = new Dictionary<Pos, Pos>();
 
-    public List<Pos> FindPath(Map map, Pos start, Pos goal)
+    public List<Pos> FindPath(Map map, Pos start, Pos goal, bool avoidEnemy = false, List<Pac> enemyPacs = null)
     {
         _openSet[start] = true;
         _gScore[start] = 0;
@@ -760,7 +850,7 @@ public class AStarPathFiner
             _openSet.Remove(current);
             _closedSet[current] = true;
 
-            var neighbors = Neighbors(map, current);
+            var neighbors = Neighbors(map, current, avoidEnemy, enemyPacs);
             //Console.Error.WriteLine($"FindPath neighbors: {neighbors.Select(x => x.ToString()).Aggregate((a,b)=> a + " | " + b )}");
 
             foreach (var neighbor in neighbors)
@@ -809,29 +899,44 @@ public class AStarPathFiner
         return score;
     }
 
-    public static IEnumerable<Pos> Neighbors(Map map, Pos center)
+    public static IEnumerable<Pos> Neighbors(Map map, Pos center, bool avoidEnemy, List<Pac> enemyPacs)
     {
         //North
         Pos pt = center.North;
-        if (IsValidNeighbor(map, pt))
+        if (IsValidNeighbor(map, pt, avoidEnemy, enemyPacs)) 
             yield return pt;
         //East
         pt = center.East;
-        if (IsValidNeighbor(map, pt))
+        if (IsValidNeighbor(map, pt, avoidEnemy, enemyPacs))
             yield return pt;
         //South
         pt = center.South;
-        if (IsValidNeighbor(map, pt))
+        if (IsValidNeighbor(map, pt, avoidEnemy, enemyPacs))
             yield return pt;
         //West
         pt = center.West;
-        if (IsValidNeighbor(map, pt))
+        if (IsValidNeighbor(map, pt, avoidEnemy, enemyPacs))
             yield return pt;
     }
 
-    public static bool IsValidNeighbor(Map map, Pos pt)
+    private static bool IsEnemy(List<Pac> enemyPacs, Pos pt)
     {
-        return map.IsPosOnBoard(pt) && map.IsFloorTile(pt);
+        return enemyPacs?.Where(e => e.Pos == pt)?.Any() ?? false;
+    }
+
+    public static bool IsValidNeighbor(Map map, Pos pt, bool avoidEnemy, List<Pac> enemyPacs)
+    {
+        if (map.IsPosOnBoard(pt) && map.IsFloorTile(pt))
+        {
+            if (avoidEnemy)
+            {
+                return !IsEnemy(enemyPacs, pt);
+            }
+
+            return true;
+
+        }
+        return false;
     }
 
     private List<Pos> Reconstruct(Pos current)
