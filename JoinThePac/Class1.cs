@@ -6,6 +6,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Security.Cryptography.X509Certificates;
 using System.Diagnostics;
+using System.Reflection.Metadata.Ecma335;
 
 /**
  * Grab the pellets as fast as you can!
@@ -27,9 +28,12 @@ public class Game : Logger
     public static Map _map;
     public static List<Pellet> _pellets;
     public Dictionary<Pac, string> _moveOutput;
-
+    public int turnCount = 0;
     public void Play(string[] args)
     {
+        int myScore = 0;
+        int opponentScore = 0;
+
         string[] inputs;
         var inputBoardSize = Console.ReadLine();
         //Err($"inputBoardSize: {inputBoardSize}");
@@ -50,14 +54,15 @@ public class Game : Logger
         // game loop
         while (true)
         {
+            turnCount++;
             #region Read input
             enemyPacs = new List<Pac>();
             var inputScore = Console.ReadLine();
             _moveOutput = new Dictionary<Pac, string>();
             //Err($"inputScore: {inputScore}");
             inputs = inputScore.Split(' ');
-            int myScore = int.Parse(inputs[0]);
-            int opponentScore = int.Parse(inputs[1]);
+            myScore = int.Parse(inputs[0]);
+            opponentScore = int.Parse(inputs[1]);
             int visiblePacCount = int.Parse(Console.ReadLine()); // all your pacs and enemy pacs in sight
             //Err($"visiblePacCount: {visiblePacCount}");
             var pacsAlive = new List<int>();
@@ -74,14 +79,37 @@ public class Game : Logger
                 int speedTurnsLeft = int.Parse(inputs[5]); // unused in wood leagues
                 var abilityCooldown = int.Parse(inputs[6]); // unused in wood leagues
 
-                if (mine)
+                if(typeId != PacType.DEAD.ToString())
                 {
-                    pacsAlive.Add(pacId);
-                    var pac = pacs.Find(p => p.Id == pacId);
-
-                    if (pac == default)
+                    if (mine)
                     {
-                        pacs.Add(new Pac(_map)
+                        pacsAlive.Add(pacId);
+                        var pac = pacs.Find(p => p.Id == pacId);
+
+                        if (pac == default)
+                        {
+                            pacs.Add(new Pac(_map)
+                            {
+                                Id = pacId,
+                                Pos = new Pos(x, y),
+                                PacType = Enum.Parse<PacType>(typeId),
+                                SpeedTurnsLeft = speedTurnsLeft,
+                                AbilityCooldown = abilityCooldown
+                            });
+                        }
+                        else
+                        {
+                            pac.LastMove = pac.Pos;
+                            pac.Pos = new Pos(x, y);
+                            pac.PacType = Enum.Parse<PacType>(typeId);
+                            pac.SpeedTurnsLeft = speedTurnsLeft;
+                            pac.AbilityCooldown = abilityCooldown;
+                            if (pac.Pos == pac.NextTarget) pac.NextTarget = null; // target has been reached
+                        }
+                    }
+                    else
+                    {
+                        enemyPacs.Add(new Pac(_map)
                         {
                             Id = pacId,
                             Pos = new Pos(x, y),
@@ -90,27 +118,8 @@ public class Game : Logger
                             AbilityCooldown = abilityCooldown
                         });
                     }
-                    else
-                    {
-                        pac.LastMove = pac.Pos;
-                        pac.Pos = new Pos(x, y);
-                        pac.PacType = Enum.Parse<PacType>(typeId);
-                        pac.SpeedTurnsLeft = speedTurnsLeft;
-                        pac.AbilityCooldown = abilityCooldown;
-                        if (pac.Pos == pac.NextTarget) pac.NextTarget = null; // target has been reached
-                    }
                 }
-                else
-                {
-                    enemyPacs.Add(new Pac(_map)
-                    {
-                        Id = pacId,
-                        Pos = new Pos(x, y),
-                        PacType = Enum.Parse<PacType>(typeId),
-                        SpeedTurnsLeft = speedTurnsLeft,
-                        AbilityCooldown = abilityCooldown
-                    });
-                }
+                
             }
             // remove pacs that have died
             pacs.RemoveAll(p => !pacsAlive.Contains(p.Id));
@@ -159,7 +168,12 @@ public class Game : Logger
             // clear next target if I know the pellet is gone
             foreach (var pac in pacs)
             {
-                if (tilesWithoutPellets.Contains(pac.NextTarget)) pac.NextTarget = null;
+                if (tilesWithoutPellets.Contains(pac.NextTarget))
+                {
+                    Err($"pac.NextTarget = null; was {pac.NextTarget}. tilesWithoutPellets {tilesWithoutPellets.EnumerableToString()}");
+                    pac.NextTarget = null;
+                }
+
             }
             #endregion STATE UPDATE
 
@@ -196,7 +210,17 @@ public class Game : Logger
                 // aim for enemy
                 if (enemyPacs.Any())
                 {
-                    var enemyPac = enemyPacs.First();
+                    var enemyPacsPaths = new Dictionary<Pac, List<Pos>>();
+                    foreach (var ep in enemyPacs)
+                    {
+                        var pather = new AStarPathFiner();
+                        enemyPacsPaths.Add(ep, pather.FindPath(_map, pac.Pos, ep.Pos));
+                    }
+
+                    var enemyPac = enemyPacsPaths.OrderBy(p => p.Value.Count).First().Key; // choose closest enemy
+
+                    if (enemyPacsPaths[enemyPac].Count > 6) goto SkipToEndOfAttack; // enemy is too far focus on pellets
+
                     pac.NextTarget = enemyPac.Pos;
                     var forcePathRecalc = pac.NextMove;
 
@@ -241,11 +265,42 @@ public class Game : Logger
                     //same type
                     else if(pac.PacType == enemyPac.PacType)
                     {
+                        if (enemyPac.AbilityCooldown == 0 &&
+                            ((pac.Path.Count == 1 && !enemyPac.IsOnSpeed) ||
+                            (enemyPac.IsOnSpeed && pac.Path.Count == 2)))
+                        {
+                            //he is likly to chagne or move so wait to see if he changes
+                            _moveOutput[pac] = $"MOVE {pac.Id} {pac.Pos} '{pac.Pos}'";
+                            Err($"ATTACK MODE P{pac.Id}! Same Type, enemy could SWITCH and eat me");
+                            continue;
+                        }
+
                         if (pac.AbilityCooldown == 0)
                         {
-                            _moveOutput[pac] = $"SWITCH {pac.Id} {enemyPac.PacType.GetOpposite()}";
-                            Err($"ATTACK MODE P{pac.Id}! Same Type. Switch to stroner type");
-                            continue;
+                            if ((enemyPac.IsOnSpeed && pac.Path.Count > 3) ||
+                                (pac.Path.Count > 2 && !enemyPac.IsOnSpeed))
+                            {
+                                _moveOutput[pac] = $"MOVE {pac.Id} {GetPathMove(pac)} '{GetPathMove(pac)}'";
+                                Err($"ATTACK MODE P{pac.Id}! Same Type, enemy at 3 or 4s dist. move forward 1");
+                                continue;
+                            }
+
+                            if ((pac.Path.Count == 2 && !enemyPac.IsOnSpeed) ||
+                                (enemyPac.IsOnSpeed && pac.Path.Count == 3))
+                            {
+                                //dont move && bait him
+                                _moveOutput[pac] = $"MOVE {pac.Id} {pac.Pos} '{pac.Pos}'";
+                                Err($"ATTACK MODE P{pac.Id}! Same Type, enemy at 2 or 3 dist. bait him");
+                                continue;
+                            }
+
+                            if ((pac.Path.Count == 1 && !enemyPac.IsOnSpeed) ||
+                                (enemyPac.IsOnSpeed && pac.Path.Count == 2))
+                            {
+                                _moveOutput[pac] = $"SWITCH {pac.Id} {enemyPac.PacType.GetOpposite()}";
+                                Err($"ATTACK MODE P{pac.Id}! Same Type, enemy right on me SWITCH & Kill");
+                                continue;
+                            }
                         }
                         else
                         {
@@ -297,7 +352,7 @@ public class Game : Logger
                                 {
                                     doubleMove.AddRange(_map.ValidAdjecentPos(pos));
                                 }
-                                 doubleMove.AddRange(moves);
+                                doubleMove.AddRange(moves);
                                 moves = doubleMove.Distinct().ToList();
                                 var edgeMove = new List<Pos>();
                                 foreach (var move in moves)
@@ -316,11 +371,22 @@ public class Game : Logger
                                 continue;
                             }
 
-                            _moveOutput[pac] = $"MOVE {pac.Id} {moves.First()} '{moves.First()}'";
-                            Err($"ATTACK MODE P{pac.Id}! I am weaker, no ability run");
-                            continue;
+                            if (moves.Any())
+                            {
+                                _moveOutput[pac] = $"MOVE {pac.Id} {moves.First()} '{moves.First()}'";
+                                Err($"ATTACK MODE P{pac.Id}! I am weaker, no ability run");
+                                continue;
+
+                            }
+                            else
+                            {
+                                _moveOutput[pac] = $"MOVE {pac.Id} {pac.Pos} '{pac.Pos}'";
+                                Err($"ATTACK MODE P{pac.Id}! I am weaker, no ability, no possible moves. Dont Move");
+                                continue;
+                            }
                         }
                     }
+                    SkipToEndOfAttack:;
                 }
 
                 // aim for Super pellet
@@ -333,13 +399,41 @@ public class Game : Logger
                 {
                     var pelletsClosestToThisPac = _pellets?.Where(x => x.ClosestPac.HasValue && x.ClosestPac.Value.Key == pac)?.OrderBy(x => x.ClosestPac.Value.Value);
                     var closestPelletToThisPac = pelletsClosestToThisPac?.FirstOrDefault();
-                    pac.NextTarget = closestPelletToThisPac?.Pos;
+
+                    var lastSelectedTargetStillHasPellet = _pellets?.Where(p => p.Pos == pac.NextTarget).Any();
+                    if (lastSelectedTargetStillHasPellet.HasValue && lastSelectedTargetStillHasPellet.Value && closestPelletToThisPac != null)
+                    {
+                        var pather = new AStarPathFiner();
+                        var pathToLastTarget = pather.FindPath(_map, pac.Pos, pac.NextTarget);
+                        pather = new AStarPathFiner();
+                        var pathToNewTarget = pather.FindPath(_map, pac.Pos, closestPelletToThisPac?.Pos);
+                        if (pathToNewTarget.Count < pathToLastTarget.Count) pac.NextTarget = closestPelletToThisPac?.Pos;
+                        Err($"Used AStarPathFiner. old target {pathToLastTarget.Last()} len {pathToLastTarget.Count} new target {pathToNewTarget.Last()} len {pathToNewTarget.Count}. Chose {pac.NextTarget}.");
+                    }
+                    else
+                    {
+                        pac.NextTarget = closestPelletToThisPac?.Pos;
+                    }
 
                     if (!pac.HasTarget)
                     {
                         pelletsClosestToThisPac = _pellets?.Select(p => new Pellet { Pos = p.Pos, Value = p.Value, PacDistances = p.PacDistances?.Where(x => x.Key == pac)?.ToDictionary(y => y.Key, j => j.Value) })?.OrderBy(p => p.Value);
                         closestPelletToThisPac = pelletsClosestToThisPac?.FirstOrDefault();
-                        pac.NextTarget = closestPelletToThisPac?.Pos;
+                        
+                        lastSelectedTargetStillHasPellet = _pellets?.Where(p => p.Pos == pac.NextTarget).Any();
+                        if (lastSelectedTargetStillHasPellet.HasValue && lastSelectedTargetStillHasPellet.Value && closestPelletToThisPac != null)
+                        {
+                            var pather = new AStarPathFiner();
+                            var pathToLastTarget = pather.FindPath(_map, pac.Pos, pac.NextTarget);
+                            pather = new AStarPathFiner();
+                            var pathToNewTarget = pather.FindPath(_map, pac.Pos, closestPelletToThisPac?.Pos);
+                            if (pathToNewTarget.Count < pathToLastTarget.Count) pac.NextTarget = closestPelletToThisPac?.Pos;
+                            Err($"Used AStarPathFiner. old target {pathToLastTarget.Last()} len {pathToLastTarget.Count} new target {pathToNewTarget.Last()} len {pathToNewTarget.Count}. Chose {pac.NextTarget}.");
+                        }
+                        else
+                        {
+                            pac.NextTarget = closestPelletToThisPac?.Pos;
+                        }
                     }
                 }
             }
@@ -422,30 +516,32 @@ public class Game : Logger
 
             foreach (var pac in pacs)
             {
-                //if (pac.AbilityCooldown == 0)
-                //{
-                //    if (pac.IsBlocked)
-                //    {
-                //        //Err($"pac.IsBlocked && Ability cool down is 0");
-                //        //Err($"enemyPac: {enemyPacs.EnumerableToString()}");
-                //        //Err($"my pac: {pac}");
-                //        //Err($"My Pos: {pac.Pos}, My Forward: {pac.Forward}, My DoubleForward Pos: {pac.DoubleForward}, DoubleEast: {pac.Pos.East.East}");
-                //        var blockingEnemy = enemyPacs.Find(p => p.Pos == pac.Forward || p.Pos == pac.DoubleForward);
-                //        //Err($"blockingEnemy: {blockingEnemy}");
-                //        if (blockingEnemy != default) // blocked by enemy change to opposite type
-                //        {
-                //            var oppositeType = blockingEnemy.PacType.GetOpposite();
-                //            if (!_moveOutput.ContainsKey(pac)) _moveOutput[pac] = $"SWITCH {pac.Id} {oppositeType}";
-                //        }
-                //    }
-                //    else
-                //    {
-                //        //if(!_moveOutput.ContainsKey(pac)) _moveOutput[pac] = $"SPEED {pac.Id}"; // SPEED <pacId>
-                //    }
-                //}
+
+                if (pac.AbilityCooldown == 0)
+                {
+                    if ((turnCount < 5 || myScore < opponentScore) && !_moveOutput.ContainsKey(pac)) _moveOutput[pac] = $"SPEED {pac.Id}"; // SPEED <pacId>
+                    //if (pac.IsBlocked)
+                    //{
+                    //    //Err($"pac.IsBlocked && Ability cool down is 0");
+                    //    //Err($"enemyPac: {enemyPacs.EnumerableToString()}");
+                    //    //Err($"my pac: {pac}");
+                    //    //Err($"My Pos: {pac.Pos}, My Forward: {pac.Forward}, My DoubleForward Pos: {pac.DoubleForward}, DoubleEast: {pac.Pos.East.East}");
+                    //    var blockingEnemy = enemyPacs.Find(p => p.Pos == pac.Forward || p.Pos == pac.DoubleForward);
+                    //    //Err($"blockingEnemy: {blockingEnemy}");
+                    //    if (blockingEnemy != default) // blocked by enemy change to opposite type
+                    //    {
+                    //        var oppositeType = blockingEnemy.PacType.GetOpposite();
+                    //        if (!_moveOutput.ContainsKey(pac)) _moveOutput[pac] = $"SWITCH {pac.Id} {oppositeType}";
+                    //    }
+                    //}
+                    //else
+                    //{
+                    //    //if(!_moveOutput.ContainsKey(pac)) _moveOutput[pac] = $"SPEED {pac.Id}"; // SPEED <pacId>
+                    //}
+                }
                 if (pac.NextTarget != null)
                 {
-                    var blockingPac = pacs.Find(p => p.Pos == pac.Forward);
+                    var blockingPac = pacs.Find(p => p.Pos == pac.Forward || p.Pos == pac.DoubleForward);
                     if (blockingPac != default) // blocked by me
                     {
                         //Err($"Blocked by me. Pac {pac.Id} is blocked by {blockingPac.Id}.");
@@ -664,7 +760,8 @@ public enum PacType
 {
     ROCK, 
     PAPER,
-    SCISSORS
+    SCISSORS,
+    DEAD
 }
 
 public static class ExtensionMethods
