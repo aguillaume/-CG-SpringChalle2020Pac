@@ -16,6 +16,9 @@ class Player
 internal class Algo : Logger
 {
     Graph _gameGraph = new Graph();
+    List<Pac> pacs = new List<Pac>();
+    List<Pac> enemyPacs = new List<Pac>();
+    Dictionary<Pac, string> _moveOutput = new Dictionary<Pac, string>();
 
     internal void Play(string[] args)
     {
@@ -24,9 +27,20 @@ internal class Algo : Logger
         while (true)
         {
             ReadInput(args);
+
+            ClearPacInfo();
         }
 
         throw new NotImplementedException();
+    }
+
+    // remove the pcas from the graph so they can be added anew in the next turn input and not have duplicate pacs in the graph
+    private void ClearPacInfo()
+    {
+        foreach (var pac in pacs.Concat(enemyPacs))
+        {
+            _gameGraph.FindNode(new Node(pac.Pos)).Pac = null;
+        }
     }
 
     private void ReadMapInPut(string[] args)
@@ -94,9 +108,9 @@ internal class Algo : Logger
 
     void ReadInput(string[] args)
     {
-        //enemyPacs = new List<Pac>();
+        enemyPacs = new List<Pac>();
         var inputScore = Console.ReadLine();
-        //_moveOutput = new Dictionary<Pac, string>();
+        _moveOutput = new Dictionary<Pac, string>();
         //Err($"inputScore: {inputScore}");
         string[] inputs = inputScore.Split(' ');
         int myScore = int.Parse(inputs[0]);
@@ -117,14 +131,15 @@ internal class Algo : Logger
             int speedTurnsLeft = int.Parse(inputs[5]); // unused in wood leagues
             var abilityCooldown = int.Parse(inputs[6]); // unused in wood leagues
 
+            Pac pac = new Pac();
             if (mine)
             {
                 pacsAlive.Add(pacId);
-                var pac = pacs.Find(p => p.Id == pacId);
+                var myPac = pacs.Find(p => p.Id == pacId);
 
-                if (pac == default)
+                if (myPac == default)
                 {
-                    pacs.Add(new Pac(_map)
+                    pacs.Add(new Pac()
                     {
                         Id = pacId,
                         Pos = new Pos(x, y),
@@ -135,25 +150,26 @@ internal class Algo : Logger
                 }
                 else
                 {
-                    pac.LastMove = pac.Pos;
-                    pac.Pos = new Pos(x, y);
-                    pac.PacType = Enum.Parse<PacType>(typeId);
-                    pac.SpeedTurnsLeft = speedTurnsLeft;
-                    pac.AbilityCooldown = abilityCooldown;
-                    if (pac.Pos == pac.NextTarget) pac.NextTarget = null; // target has been reached
+                    myPac.LastMove = myPac.Pos;
+                    myPac.Pos = new Pos(x, y);
+                    myPac.PacType = Enum.Parse<PacType>(typeId);
+                    myPac.SpeedTurnsLeft = speedTurnsLeft;
+                    myPac.AbilityCooldown = abilityCooldown;
+                    if (myPac.Pos == myPac.NextTarget) myPac.NextTarget = null; // target has been reached
                 }
+                pac = pacs.Find(p => p.Id == pacId);
             }
             else
             {
-                enemyPacs.Add(new Pac(_map)
-                {
-                    Id = pacId,
-                    Pos = new Pos(x, y),
-                    PacType = Enum.Parse<PacType>(typeId),
-                    SpeedTurnsLeft = speedTurnsLeft,
-                    AbilityCooldown = abilityCooldown
-                });
+                pac.Id = pacId;
+                pac.Pos = new Pos(x, y);
+                pac.PacType = Enum.Parse<PacType>(typeId);
+                pac.SpeedTurnsLeft = speedTurnsLeft;
+                pac.AbilityCooldown = abilityCooldown;
+                enemyPacs.Add(pac);
             }
+
+            _gameGraph.FindNode(new Node(pac.Pos)).Pac = pac;
         }
         // remove pacs that have died
         pacs.RemoveAll(p => !pacsAlive.Contains(p.Id));
@@ -171,7 +187,9 @@ internal class Algo : Logger
             int y = int.Parse(inputs[1]);
             int value = int.Parse(inputs[2]); // amount of points this pellet is worth
                                               //pellets.Add(new Pellet { Pos = new Pos(x, y), Value = value });
-            visiblePellets.Add(new Pellet { Pos = new Pos(x, y), Value = value });
+            var pellet = new Pellet { Pos = new Pos(x, y), Value = value };
+            visiblePellets.Add(pellet);
+            _gameGraph.FindNode(new Node(new Pos(x, y))).Pellet = pellet;
         }
 
         throw new NotImplementedException();
@@ -434,13 +452,6 @@ class Pellet : IEquatable<Pellet>
 
 class Pac : Logger, IEquatable<Pac>
 {
-    private Map _map;
-
-    public Pac(Map map)
-    {
-        _map = map;
-    }
-
     public int Id { get; set; }
     public Pos Pos { get; set; }
     public Pos NextTarget { get => _nextTarget; set => _nextTarget = value; }
@@ -567,4 +578,11 @@ class Pac : Logger, IEquatable<Pac>
         return !(lhs == rhs);
     }
     #endregion IEquatable
-}   
+}
+
+public enum PacType
+{
+    ROCK,
+    PAPER,
+    SCISSORS
+}
